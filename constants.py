@@ -24,8 +24,8 @@ SERVER_NAME_SIZE = 32
 PLAYER_DECISION_SIZE = 5  # Both "Hittt" and "Stand" are 5 bytes
 
 # Team Settings
-SERVER_NAME = "BeautyBlenderServer" # תבחרי שם יצירתי לתחרות!
-TEAM_NAME = "BeautyBlender"
+SERVER_NAME = "BeautyBlendersServer" # תבחרי שם יצירתי לתחרות!
+TEAM_NAME = "BeautyBlenders"
 
 # Connection Settings
 BUFFER_SIZE = 1024
