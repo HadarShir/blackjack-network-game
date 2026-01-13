@@ -1,8 +1,11 @@
-# client.py (Final)
+# client.py (Final+)
 # Runs forever:
 #   Welcome -> get name -> discover offers -> play session (3 rounds) -> ask play again
 # If user says "n": go idle (no auto-connect) and wait for explicit "y" to search again.
 # Supports clean exit via Ctrl+C OR typing 'q' in prompts.
+#
+# ✅ Upgrade: If player reaches EXACTLY 21 after a Hittt -> auto-Stand (UX improvement)
+#    (Still keeps protocol sync by sending "Stand" and then reading dealer turn normally)
 
 import socket
 from typing import List, Tuple, Optional
@@ -20,8 +23,10 @@ Card = Tuple[int, int]  # (rank, suit)
 
 DEFAULT_NUM_ROUNDS = 3
 
-#FILTER_SERVER_NAME = "BeautyBlendersServer"   # <- לשים את השם שלך
-FILTER_SERVER_NAME = None                   # <- לכבות פילטר
+# FILTER_SERVER_NAME = "BeautyBlendersServer"   # <- enable filter (accept only this server_name)
+FILTER_SERVER_NAME = None  # <- disable filter (accept any server)
+
+
 # ==============================
 # UDP Discovery
 # ==============================
@@ -39,8 +44,7 @@ def find_server_offer(timeout_sec: int = 30) -> Tuple[Optional[str], Optional[in
 
     active_filter = FILTER_SERVER_NAME if (FILTER_SERVER_NAME and FILTER_SERVER_NAME.strip()) else None
     if active_filter:
-        print(f"Client listening for offers on UDP {UDP_PORT} (timeout {timeout_sec}s)... "
-              f"[filter='{active_filter}']")
+        print(f"Client listening for offers on UDP {UDP_PORT} (timeout {timeout_sec}s)... [filter='{active_filter}']")
     else:
         print(f"Client listening for offers on UDP {UDP_PORT} (timeout {timeout_sec}s)...")
 
@@ -56,7 +60,7 @@ def find_server_offer(timeout_sec: int = 30) -> Tuple[Optional[str], Optional[in
             server_name = offer["server_name"]
             server_port = offer["port"]
 
-            # ✅ Only accept matching server if filter is enabled
+            # Only accept matching server if filter is enabled
             if active_filter and server_name != active_filter:
                 continue
 
@@ -172,10 +176,7 @@ def welcome_and_get_name() -> str:
     print("Play smart: you can walk away with everything… or with nothing 😈\n")
 
     while True:
-        try:
-            name = input("Enter your team/player name (or 'q' to quit): ").strip()
-        except KeyboardInterrupt:
-            raise
+        name = input("Enter your team/player name (or 'q' to quit): ").strip()
 
         if name.lower() in ("q", "quit", "exit"):
             raise KeyboardInterrupt
@@ -233,6 +234,79 @@ def print_stall_message():
 
 
 # ==============================
+# Dealer Turn Handler (reused)
+# ==============================
+
+def handle_dealer_turn(
+    tcp_sock: socket.socket,
+    player_cards: List[Card],
+    dealer_cards: List[Card],
+    first_payload: dict,
+    wins_losses_ties: List[int],
+) -> bool:
+    """
+    Process dealer turn after player stands.
+    first_payload is the first server payload after Stand was sent.
+    wins_losses_ties is [wins, losses, ties] (mutated in place).
+    Returns True if round ended cleanly, False on disconnect/error.
+    """
+    wins, losses, ties = wins_losses_ties
+
+    print("\n--- Dealer turn ---")
+
+    # First NOT_OVER after Stand should be hidden dealer card
+    if first_payload["result"] == 0:
+        dealer_cards.append((first_payload["rank"], first_payload["suit"]))
+        print(cards_to_ascii_row(dealer_cards))
+        print_score(player_cards, dealer_cards, reveal_dealer=True)
+    else:
+        # immediate final
+        if first_payload["result"] == 3:
+            wins += 1
+            print("Result: WIN")
+        elif first_payload["result"] == 2:
+            losses += 1
+            print("Result: LOSS")
+        else:
+            ties += 1
+            print("Result: TIE")
+        wins_losses_ties[:] = [wins, losses, ties]
+        return True
+
+    # Then dealer draws until final result arrives
+    while True:
+        nxt_bytes = recv_exact(tcp_sock, SERVER_PAYLOAD_SIZE)
+        if nxt_bytes is None:
+            print_stall_message()
+            return False
+
+        nxt = parse_server_payload(nxt_bytes)
+        if nxt is None:
+            print("Invalid dealer payload.")
+            return False
+
+        if nxt["result"] == 0:
+            dealer_cards.append((nxt["rank"], nxt["suit"]))
+            print(cards_to_ascii_row(dealer_cards))
+            print_score(player_cards, dealer_cards, reveal_dealer=True)
+            continue
+
+        # final result
+        if nxt["result"] == 3:
+            wins += 1
+            print("Result: WIN")
+        elif nxt["result"] == 2:
+            losses += 1
+            print("Result: LOSS")
+        else:
+            ties += 1
+            print("Result: TIE")
+
+        wins_losses_ties[:] = [wins, losses, ties]
+        return True
+
+
+# ==============================
 # One TCP Session (True = normal end, False = disconnect/timeout)
 # ==============================
 
@@ -281,7 +355,7 @@ def play_session(server_ip: str, server_tcp_port: int, num_rounds: int, team_nam
             print(cards_to_ascii_row(dealer_cards, show_hidden=True))
             print_score(player_cards, dealer_cards, reveal_dealer=False)
 
-            # Client-side UX: if 21, don't ask for input, but MUST read server final payload
+            # If 21 on initial two cards: don't ask input (but must read server final payload)
             if hand_total(player_cards) == 21:
                 print("\n🎉 Blackjack! Waiting for server confirmation...")
                 final_bytes = recv_exact(tcp_sock, SERVER_PAYLOAD_SIZE)
@@ -308,10 +382,7 @@ def play_session(server_ip: str, server_tcp_port: int, num_rounds: int, team_nam
             # ----- Player loop -----
             round_over = False
             while not round_over:
-                try:
-                    choice = input("\nType Hittt or Stand (or 'q' to quit): ").strip()
-                except KeyboardInterrupt:
-                    raise
+                choice = input("\nType Hittt or Stand (or 'q' to quit): ").strip()
 
                 if choice.lower() in ("q", "quit", "exit"):
                     raise KeyboardInterrupt
@@ -320,7 +391,7 @@ def play_session(server_ip: str, server_tcp_port: int, num_rounds: int, team_nam
                     print("Please type exactly: Hittt or Stand")
                     continue
 
-                # Send decision (server may have closed due to timeout)
+                # Send decision
                 try:
                     tcp_sock.sendall(create_client_payload(choice))
                 except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
@@ -349,6 +420,33 @@ def play_session(server_ip: str, server_tcp_port: int, num_rounds: int, team_nam
                         print("\nDealer shows (1 hidden):")
                         print(cards_to_ascii_row(dealer_cards, show_hidden=True))
                         print_score(player_cards, dealer_cards, reveal_dealer=False)
+
+                        # ✅ NEW: if exactly 21 after Hittt -> auto-Stand (send Stand + handle dealer)
+                        if hand_total(player_cards) == 21:
+                            print("\n🎯 You hit 21! Auto-Stand.")
+                            try:
+                                tcp_sock.sendall(create_client_payload("Stand"))
+                            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
+                                print_stall_message()
+                                return False
+
+                            first = recv_exact(tcp_sock, SERVER_PAYLOAD_SIZE)
+                            if first is None:
+                                print_stall_message()
+                                return False
+
+                            first_msg = parse_server_payload(first)
+                            if first_msg is None:
+                                print("Invalid dealer payload.")
+                                return False
+
+                            wlt = [wins, losses, ties]
+                            ok = handle_dealer_turn(tcp_sock, player_cards, dealer_cards, first_msg, wlt)
+                            if not ok:
+                                return False
+                            wins, losses, ties = wlt
+                            round_over = True
+                            continue
 
                         # bust? then server sends one more final payload
                         if hand_total(player_cards) > 21:
@@ -394,58 +492,13 @@ def play_session(server_ip: str, server_tcp_port: int, num_rounds: int, team_nam
                 # STAND
                 # -----------------
                 if choice == "Stand":
-                    print("\n--- Dealer turn ---")
-
-                    # first NOT_OVER after Stand is hidden dealer card
-                    if resp["result"] == 0:
-                        dealer_cards.append((resp["rank"], resp["suit"]))
-                        print(cards_to_ascii_row(dealer_cards))
-                        print_score(player_cards, dealer_cards, reveal_dealer=True)
-                    else:
-                        # very rare immediate end
-                        if resp["result"] == 3:
-                            wins += 1
-                            print("Result: WIN")
-                        elif resp["result"] == 2:
-                            losses += 1
-                            print("Result: LOSS")
-                        else:
-                            ties += 1
-                            print("Result: TIE")
-                        round_over = True
-                        continue
-
-                    # dealer draws until final result
-                    while True:
-                        nxt_bytes = recv_exact(tcp_sock, SERVER_PAYLOAD_SIZE)
-                        if nxt_bytes is None:
-                            print_stall_message()
-                            return False
-
-                        nxt = parse_server_payload(nxt_bytes)
-                        if nxt is None:
-                            print("Invalid dealer payload.")
-                            return False
-
-                        if nxt["result"] == 0:
-                            dealer_cards.append((nxt["rank"], nxt["suit"]))
-                            print(cards_to_ascii_row(dealer_cards))
-                            print_score(player_cards, dealer_cards, reveal_dealer=True)
-                            continue
-
-                        # final result
-                        if nxt["result"] == 3:
-                            wins += 1
-                            print("Result: WIN")
-                        elif nxt["result"] == 2:
-                            losses += 1
-                            print("Result: LOSS")
-                        else:
-                            ties += 1
-                            print("Result: TIE")
-
-                        round_over = True
-                        break
+                    wlt = [wins, losses, ties]
+                    ok = handle_dealer_turn(tcp_sock, player_cards, dealer_cards, resp, wlt)
+                    if not ok:
+                        return False
+                    wins, losses, ties = wlt
+                    round_over = True
+                    continue
 
         # Session summary
         total = wins + losses + ties
