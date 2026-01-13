@@ -12,6 +12,7 @@ MSG_TYPE_OFFER = 0x2
 MSG_TYPE_REQUEST = 0x3
 MSG_TYPE_PAYLOAD = 0x4
 
+# הגדרה של ניצחון הפסד וכדומה
 # Payload Result Codes (server -> client)
 RESULT_GAME_NOT_OVER = 0x00
 RESULT_TIE = 0x01
