@@ -332,6 +332,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                         print("Outcome: WIN")
                     elif resp["result"] == RESULT_LOSS:
                         losses += 1
+                        print("You busted! 😵")
                         print("Outcome: LOSS")
                     else:
                         ties += 1
@@ -375,6 +376,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                         print("Outcome: WIN")
                     elif nxt["result"] == RESULT_LOSS:
                         losses += 1
+                        print("You busted! 😵")
                         print("Outcome: LOSS")
                     else:
                         ties += 1
