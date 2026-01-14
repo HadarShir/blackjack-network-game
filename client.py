@@ -322,6 +322,11 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
 
                 # ✅ Option 2: If bust happened on server, server sends LOSS immediately here.
                 if resp["result"] != RESULT_GAME_NOT_OVER:
+                    if choice == "Hittt":
+                        player_cards.append((resp["rank"], resp["suit"]))
+                        print_hands(player_cards, dealer_cards, dealer_has_hidden=True)
+                        print_totals(player_cards, dealer_cards, dealer_hidden=True)
+
                     if resp["result"] == RESULT_WIN:
                         wins += 1
                         print("Outcome: WIN")
@@ -380,7 +385,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
 
         win_rate = (wins / rounds * 100.0) if rounds > 0 else 0.0
 
-        # ✅ Required final line (exact required format)
+        # Required final line (exact required format)
         print(f"Finished playing {rounds} rounds, win rate: {win_rate:.1f}")
 
     finally:
