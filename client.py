@@ -1,26 +1,15 @@
 # client.py
-# Assignment-aligned client (with small UX additions):
-# 1) Ask user how many rounds
-# 2) Listen for UDP offers on port 13122
-# 3) Print: "Client started, listening for offer requests..."
-# 4) Print: "Received offer from <ip>"
-# 5) Connect via TCP, send binary request packet (NO '\n')
-# 6) Play rounds using payload protocol
-# 7) Print: "Finished playing {x} rounds, win rate: {win_rate}"
-# 8) Loop forever until Ctrl+C
-#
-# ✅ UX additions (do not break required prints):
-# - Welcome banner before asking rounds
-# - If server/client stalls for 60s during the TCP game: print a fun timeout message
-# - Print totals (your total / dealer shown total / dealer total) after every relevant stage
-# - Optional noise filtering by server name (FILTER_SERVER_NAME)
+
 
 import socket
 import sys
 from typing import List, Tuple, Optional
 
-# FILTER_SERVER_NAME = "BeautyBlendersServer"   # <- enable filter (accept only this server_name)
-FILTER_SERVER_NAME = None  # <- disable filter (accept any server)
+# Optional noise filter:
+# If set to a specific server name, we accept offers only from that server.
+# Useful on crowded testing networks with many teams broadcasting offers
+FILTER_SERVER_NAME = "BeautyBlendersServer"   # <- enable filter (accept only this server_name)
+#FILTER_SERVER_NAME = None  # <- disable filter (accept any server)
 
 from constants import (
     UDP_PORT,
@@ -49,6 +38,8 @@ SHOW_ASCII_CARDS = True   # set False if you want minimal output
 GAME_IDLE_TIMEOUT_SEC = 60    # if nothing happens on TCP socket for 60s -> stall message + quit session
 TCP_CONNECT_TIMEOUT_SEC = 10  # how long to wait for TCP connect
 
+# Card representation used locally for UI/statistics:
+# (rank: 1..13, suit: 0..3)
 Card = Tuple[int, int]  # (rank, suit)
 
 
@@ -71,6 +62,19 @@ def print_stall_message() -> None:
     print("\n⏱️ Game Over!")
     print("You stall, you fall. Blackjack waits for no one 😉\n")
 
+def print_slash_banner(text: str) -> None:
+    """
+    Slash-style big banner without external libs.
+    Works for any text (simple but looks cool).
+    """
+    text = text.strip()
+    line1 = " /" + "=" * (len(text) + 6) + "\\"
+    line2 = f"|   {text}   |"
+    line3 = " \\" + "=" * (len(text) + 6) + "/"
+
+    print("\n" + line1)
+    print(line2)
+    print(line3 + "\n")
 
 # ==============================
 # Input: number of rounds
@@ -99,7 +103,14 @@ def get_num_rounds() -> int:
 def recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
     """
     Read exactly n bytes from a TCP socket.
-    Returns None on timeout/disconnect/error.
+
+    Why needed?
+    TCP is a byte-stream protocol (no message boundaries).
+    Our protocol uses fixed-size binary messages (SERVER_PAYLOAD_SIZE),
+    so we must loop until we receive exactly n bytes.
+
+    Returns:
+        bytes of length n on success, or None on timeout/disconnect/error.
     """
     data = b""
     while len(data) < n:
@@ -131,15 +142,15 @@ def card_value(rank: int) -> int:
 
 
 def hand_total(cards: List[Card]) -> int:
-    """Sum of card values for a hand."""
+    """Compute total points of a hand using assignment rules."""
     return sum(card_value(rank) for rank, _ in cards)
 
 
 def print_totals(player_cards: List[Card], dealer_cards: List[Card], dealer_hidden: bool) -> None:
     """
-    Prints totals exactly like your old detailed output.
-    - dealer_hidden=True  => prints "Dealer shown total"
-    - dealer_hidden=False => prints "Dealer total"
+    Print player's total and dealer's total.
+    - dealer_hidden=True  => show only dealer's visible cards total ("Dealer shown total")
+    - dealer_hidden=False => show full dealer total ("Dealer total")
     """
     print(f"Your total: {hand_total(player_cards)}")
     if dealer_hidden:
@@ -156,7 +167,8 @@ def rank_to_face(rank: int) -> str:
 
 
 def suit_to_symbol(suit: int) -> str:
-    # 0=Hearts, 1=Diamonds, 2=Clubs, 3=Spades (per assignment text)
+    # Spec: Suit encoded 0-3 (H/D/C/S). We use:
+    # 0=Hearts, 1=Diamonds, 2=Clubs, 3=Spades
     return {0: "♥", 1: "♦", 2: "♣", 3: "♠"}.get(suit, "?")
 
 
@@ -226,9 +238,17 @@ def print_hands(player_cards: List[Card], dealer_visible_cards: List[Card], deal
 # ==============================
 def play_session(server_ip: str, server_port: int, rounds: int) -> None:
     """
-    Connect over TCP, send request packet, play 'rounds' rounds.
-    Must finish with:
-      Finished playing {x} rounds, win rate: {win_rate}
+    Connect to the chosen server over TCP, send a REQUEST packet, then play 'rounds' rounds.
+
+    Assignment flow:
+    - Connect via TCP to the server IP + TCP port obtained from the UDP offer.
+    - Immediately send REQUEST packet (binary struct; NO '\\n'):
+        cookie(4) | type(1=0x3) | rounds(1) | client_team_name(32)
+    - Play using PAYLOAD packets:
+        client->server: cookie|type(0x4)|decision(5)
+        server->client: cookie|type(0x4)|result(1)|rank(2)|suit(1)
+    - When done, print:
+        "Finished playing {x} rounds, win rate: {win_rate}"
     """
     wins = 0
     ties = 0
@@ -275,6 +295,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
             print_totals(player_cards, dealer_cards, dealer_hidden=True)  # ✅ totals like before
 
             # Player turn loop: keep sending Hittt/Stand until server ends the round
+            # Player turn
             while True:
                 choice = input("Hittt or Stand? ").strip()
                 if choice.lower() in ("q", "quit", "exit"):
@@ -283,7 +304,6 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                     print("Please type exactly: Hittt or Stand")
                     continue
 
-                # Send decision
                 try:
                     sock.sendall(create_client_payload(choice))
                 except (BrokenPipeError, ConnectionResetError, OSError):
@@ -300,7 +320,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                     print("Invalid server payload received.")
                     return
 
-                # If result != NOT_OVER => server signals the round ended immediately
+                # ✅ Option 2: If bust happened on server, server sends LOSS immediately here.
                 if resp["result"] != RESULT_GAME_NOT_OVER:
                     if resp["result"] == RESULT_WIN:
                         wins += 1
@@ -311,96 +331,23 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                     else:
                         ties += 1
                         print("Outcome: TIE")
-                    break
+                    break  # round over
 
-                # Otherwise result==NOT_OVER and payload contains a card.
-                # Which card is this depends on the choice we sent.
+                # resp result == NOT_OVER => it's a card update
 
                 if choice == "Hittt":
-                    # Player got a new card
                     player_cards.append((resp["rank"], resp["suit"]))
                     print_hands(player_cards, dealer_cards, dealer_has_hidden=True)
-                    print_totals(player_cards, dealer_cards, dealer_hidden=True)  # ✅ totals after every hit
+                    print_totals(player_cards, dealer_cards, dealer_hidden=True)
+                    # ✅ IMPORTANT: No extra recv here in Option 2.
+                    continue
 
-                    # ✅ Optional UX rule: if player hits exactly 21, auto-stand (keeps protocol sync)
-                    if hand_total(player_cards) == 21:
-                        print("🎯 You hit 21! Auto-Stand.")
-
-                        try:
-                            sock.sendall(create_client_payload("Stand"))
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            print_stall_message()
-                            return
-
-                        first = recv_exact(sock, SERVER_PAYLOAD_SIZE)
-                        if not first:
-                            print_stall_message()
-                            return
-                        first_msg = parse_server_payload(first)
-                        if not first_msg:
-                            print("Invalid dealer payload received.")
-                            return
-
-                        # If dealer immediately returns final (rare), handle it
-                        if first_msg["result"] != RESULT_GAME_NOT_OVER:
-                            if first_msg["result"] == RESULT_WIN:
-                                wins += 1
-                                print("Outcome: WIN")
-                            elif first_msg["result"] == RESULT_LOSS:
-                                losses += 1
-                                print("Outcome: LOSS")
-                            else:
-                                ties += 1
-                                print("Outcome: TIE")
-                            break
-
-                        # Dealer turn begins (first NOT_OVER after Stand = hidden dealer card)
-                        print("\n--- Dealer turn ---")
-                        dealer_cards.append((first_msg["rank"], first_msg["suit"]))  # reveal hidden
-                        print_hands(player_cards, dealer_cards, dealer_has_hidden=False)
-                        print_totals(player_cards, dealer_cards, dealer_hidden=False)  # ✅ totals after reveal
-
-                        while True:
-                            nxt_b = recv_exact(sock, SERVER_PAYLOAD_SIZE)
-                            if not nxt_b:
-                                print_stall_message()
-                                return
-
-                            nxt = parse_server_payload(nxt_b)
-                            if not nxt:
-                                print("Invalid dealer payload received.")
-                                return
-
-                            if nxt["result"] == RESULT_GAME_NOT_OVER:
-                                dealer_cards.append((nxt["rank"], nxt["suit"]))
-                                print_hands(player_cards, dealer_cards, dealer_has_hidden=False)
-                                print_totals(player_cards, dealer_cards, dealer_hidden=False)  # ✅ totals after dealer hit
-                                continue
-
-                            if nxt["result"] == RESULT_WIN:
-                                wins += 1
-                                print("Outcome: WIN")
-                            elif nxt["result"] == RESULT_LOSS:
-                                losses += 1
-                                print("Outcome: LOSS")
-                            else:
-                                ties += 1
-                                print("Outcome: TIE")
-                            break
-
-                        # Round over after dealer turn
-                        break
-
-                    continue  # continue player loop normally
-
-                # choice == "Stand"
-                # First NOT_OVER after Stand is the dealer hidden card
+                # choice == "Stand": first NOT_OVER payload after Stand is dealer hidden card reveal
                 print("\n--- Dealer turn ---")
-                dealer_cards.append((resp["rank"], resp["suit"]))  # reveal hidden
+                dealer_cards.append((resp["rank"], resp["suit"]))
                 print_hands(player_cards, dealer_cards, dealer_has_hidden=False)
-                print_totals(player_cards, dealer_cards, dealer_hidden=False)  # ✅ totals after reveal
+                print_totals(player_cards, dealer_cards, dealer_hidden=False)
 
-                # Dealer continues sending NOT_OVER for each drawn card, then final result
                 while True:
                     nxt_b = recv_exact(sock, SERVER_PAYLOAD_SIZE)
                     if not nxt_b:
@@ -415,10 +362,9 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                     if nxt["result"] == RESULT_GAME_NOT_OVER:
                         dealer_cards.append((nxt["rank"], nxt["suit"]))
                         print_hands(player_cards, dealer_cards, dealer_has_hidden=False)
-                        print_totals(player_cards, dealer_cards, dealer_hidden=False)  # ✅ totals after dealer hit
+                        print_totals(player_cards, dealer_cards, dealer_hidden=False)
                         continue
 
-                    # final result
                     if nxt["result"] == RESULT_WIN:
                         wins += 1
                         print("Outcome: WIN")
@@ -430,8 +376,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                         print("Outcome: TIE")
                     break
 
-                # round over after dealer loop
-                break
+                break  # round over after dealer
 
         win_rate = (wins / rounds * 100.0) if rounds > 0 else 0.0
 
@@ -450,8 +395,15 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
 # ==============================
 def listen_for_offer() -> tuple[str, int]:
     """
-    Blocking UDP listen for offers on UDP_PORT.
-    Optionally filters by server_name to reduce network noise.
+    Listen (blocking) for UDP OFFER packets on port 13122 (hardcoded by assignment).
+
+    Required prints:
+    - "Client started, listening for offer requests..."
+    - "Received offer from <server_ip>"
+
+    Implementation details:
+    - bind("0.0.0.0", UDP_PORT) => listen on ALL local interfaces (WiFi/hotspot/etc.)
+    - SO_REUSEPORT allows running multiple clients on the same machine (per assignment hint).
     """
     print("Client started, listening for offer requests...")
 
@@ -462,7 +414,7 @@ def listen_for_offer() -> tuple[str, int]:
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except (AttributeError, OSError):
         pass
-
+    # 0.0.0.0 => receive offers on any local IP interface
     udp_sock.bind(("0.0.0.0", UDP_PORT))
 
     active_filter = (
@@ -472,6 +424,7 @@ def listen_for_offer() -> tuple[str, int]:
     )
 
     while True:
+        # Buffer is bigger than the OFFER size (39 bytes), so we won't truncate the datagram.
         data, addr = udp_sock.recvfrom(2048)
         offer = parse_offer_packet(data)
         if not offer:
@@ -481,11 +434,15 @@ def listen_for_offer() -> tuple[str, int]:
         server_port = offer["port"]
         server_name = offer["server_name"]
 
-        # 🔇 Noise filtering
+        # Noise filtering
         if active_filter and server_name != active_filter:
             continue
 
         print(f"Received offer from {server_ip}")
+        if server_name == "BeautyBlendersServer" :
+            print_slash_banner(server_name)
+        else:
+            print(f"Connected server name: {server_name}")
         udp_sock.close()
         return server_ip, server_port
 
@@ -494,9 +451,17 @@ def listen_for_offer() -> tuple[str, int]:
 # Main loop (runs forever)
 # ==============================
 if __name__ == "__main__":
+    """
+    Main loop runs forever until Ctrl+C (assignment requirement).
+    Flow:
+      1) Ask for rounds
+      2) Listen for offer
+      3) Connect via TCP, send request, play rounds
+      4) Close TCP and return to listening again
+    """
     try:
         while True:
-            print_welcome_banner()         # ✅ Welcome (safe addition)
+            print_welcome_banner()         #  Welcome (safe addition)
             rounds = get_num_rounds()      # ask rounds
             ip, port = listen_for_offer()  # listen + select first matching offer
             play_session(ip, port, rounds) # play + close TCP

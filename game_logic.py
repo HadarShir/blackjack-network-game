@@ -51,7 +51,6 @@ class BlackjackGame:
         """
         Calculates the total value of a blackjack hand.
         Uses CARD_VALUES for standard ranks.
-        Handles Aces dynamically: Starts as 11, but converts to 1 if the total exceeds 21.
         """
         total = 0
         for rank, _ in hand:

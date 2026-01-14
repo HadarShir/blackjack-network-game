@@ -2,27 +2,63 @@
 import struct
 from constants import *
 
+
+"""
+Packet utilities: build and parse packets exactly as defined in the assignment spec.
+
+Packet Types:
+1) Offer   (server -> client, UDP)    type=0x2
+2) Request (client -> server, TCP)    type=0x3
+3) Payload (both directions, TCP)     type=0x4
+   - Client payload: decision ("Hittt"/"Stand")
+   - Server payload: result + card(rank,suit)
+"""
 # =============================================================================
 # Packet formats (network byte order)
 # =============================================================================
-# ! = network (big-endian)
+# ! = network byte order (big-endian) [standard for network protocols]
 # I = 4-byte unsigned int  (magic cookie)
 # B = 1-byte unsigned char (message type / result / rounds)
 # H = 2-byte unsigned short (TCP port / rank)
 # 32s / 5s = fixed-length bytes
+# 5s = 5 bytes string  (client decision: "Hittt"/"Stand")
 
-OFFER_FMT = f"!IBH{SERVER_NAME_SIZE}s"
+
+# OFFER packet (UDP) format:
+#   Magic cookie (4 bytes): 0xabcddcba
+#   Message type (1 byte): 0x2
+#   Server TCP port (2 bytes): port the client should connect to (TCP)
+#   Server Name (32 bytes): fixed-length, 0x00 padded / truncated
+# Total size: 4 + 1 + 2 + 32 = 39 byte
+OFFER_FMT = f"!IBH{SERVER_NAME_SIZE}s"  # ! | I(cookie) | B(type) | H(tcp_port) | 32s(server_name)
 OFFER_SIZE = struct.calcsize(OFFER_FMT)
 
-REQUEST_FMT = f"!IBB{TEAM_NAME_SIZE}s"
+# REQUEST packet (TCP) format:
+#   Magic cookie (4 bytes): 0xabcddcba
+#   Message type (1 byte): 0x3
+#   Number of rounds (1 byte): requested rounds (0-255)
+#   Client team Name (32 bytes): fixed-length, 0x00 padded / truncated
+# Total size: 4 + 1 + 1 + 32 = 38 bytes
+REQUEST_FMT = f"!IBB{TEAM_NAME_SIZE}s"  # ! | I(cookie) | B(type) | B(rounds) | 32s(team_name)
 REQUEST_SIZE = struct.calcsize(REQUEST_FMT)
 
-CLIENT_PAYLOAD_FMT = f"!IB{PLAYER_DECISION_SIZE}s"
+# CLIENT PAYLOAD packet (TCP) format:
+#   Magic cookie (4 bytes): 0xabcddcba
+#   Message type (1 byte): 0x4
+#   Player decision (5 bytes): ASCII "Hittt" or "Stand"
+# Total size: 4 + 1 + 5 = 10 bytes
+CLIENT_PAYLOAD_FMT = f"!IB{PLAYER_DECISION_SIZE}s"  # ! | I(cookie) | B(type) | 5s(decision)
 CLIENT_PAYLOAD_SIZE = struct.calcsize(CLIENT_PAYLOAD_FMT)
 
-# Server payload:
-# cookie(4) + type(1) + result(1) + rank(2) + suit(1)
-SERVER_PAYLOAD_FMT = "!IBBHB"
+# SERVER PAYLOAD packet (TCP) format (server -> client):
+#   Magic cookie (4 bytes): 0xabcddcba
+#   Message type (1 byte): 0x4
+#   Round result (1 byte):
+#       0x0 not over | 0x1 tie | 0x2 loss | 0x3 win
+#   Card rank (2 bytes): 01-13 (encoded as unsigned short)
+#   Card suit (1 byte): 0-3 (H/D/C/S or your chosen mapping)
+# Total size: 4 + 1 + 1 + 2 + 1 = 9 bytes
+SERVER_PAYLOAD_FMT = "!IBBHB"  # ! | I(cookie) | B(type) | B(result) | H(rank) | B(suit)
 SERVER_PAYLOAD_SIZE = struct.calcsize(SERVER_PAYLOAD_FMT)
 
 
@@ -64,8 +100,8 @@ def create_request_packet(num_rounds: int, team_name: str) -> bytes:
       cookie(4) | type(1=0x3) | rounds(1) | team_name(32)
 
     IMPORTANT:
-    Per the protocol text you sent, this is a fixed-size binary struct.
-    We do NOT append '\\n' here.
+    This is a fixed-size *binary* struct.
+    We do NOT append '\\n' here
     """
     if not (1 <= num_rounds <= 255):
         raise ValueError("num_rounds must fit in 1 byte (1..255)")
@@ -76,7 +112,8 @@ def create_request_packet(num_rounds: int, team_name: str) -> bytes:
 
 def parse_request_packet(data: bytes):
     """
-    Return {"rounds": int, "team_name": str} or None if invalid.
+    Parse and validate a REQUEST packet.
+    Returns dict {"rounds": int, "team_name": str} on success, else None.
     """
     if len(data) < REQUEST_SIZE:
         return None
@@ -96,9 +133,10 @@ def parse_request_packet(data: bytes):
 # =============================================================================
 def create_client_payload(decision: str) -> bytes:
     """
-    Client payload format:
+    Build a CLIENT PAYLOAD packet (client -> server).
+    Spec fields:
       cookie(4) | type(1=0x4) | decision(5)
-    decision must be "Hittt" or "Stand"
+    decision must be ASCII "Hittt" or "Stand"
     """
     if decision not in ("Hittt", "Stand"):
         raise ValueError("decision must be 'Hittt' or 'Stand'")
@@ -109,7 +147,8 @@ def create_client_payload(decision: str) -> bytes:
 
 def parse_client_payload(data: bytes):
     """
-    Return {"decision": str} or None if invalid.
+    Parse a CLIENT PAYLOAD packet (client -> server).
+    Returns dict {"decision": str} on success, else None.
     """
     if len(data) < CLIENT_PAYLOAD_SIZE:
         return None
@@ -126,15 +165,24 @@ def parse_client_payload(data: bytes):
 
 def create_server_payload(result: int, rank: int, suit: int) -> bytes:
     """
-    Server payload format:
+    Build a SERVER PAYLOAD packet (server -> client).
+    Spec fields:
       cookie(4) | type(1=0x4) | result(1) | rank(2) | suit(1)
     """
+    if result not in (RESULT_GAME_NOT_OVER, RESULT_TIE, RESULT_LOSS, RESULT_WIN):
+        raise ValueError("Invalid result code")
+    if not (1 <= rank <= 13):
+        raise ValueError("Invalid rank (must be 1..13)")
+    if not (0 <= suit <= 3):
+        raise ValueError("Invalid suit (must be 0..3)")
+
     return struct.pack(SERVER_PAYLOAD_FMT, MAGIC_COOKIE, MSG_TYPE_PAYLOAD, result, rank, suit)
 
 
 def parse_server_payload(data: bytes):
     """
-    Return {"result": int, "rank": int, "suit": int} or None if invalid.
+    Parse a SERVER PAYLOAD packet (server -> client).
+    Returns dict {"result": int, "rank": int, "suit": int} on success, else None.
     """
     if len(data) < SERVER_PAYLOAD_SIZE:
         return None
