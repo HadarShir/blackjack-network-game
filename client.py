@@ -294,15 +294,23 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
             print_hands(player_cards, dealer_cards, dealer_has_hidden=True)
             print_totals(player_cards, dealer_cards, dealer_hidden=True)  # ✅ totals like before
 
+            auto_stand_next = False
+            if hand_total(player_cards) == 21:
+                print("You have 21! 🎉 Auto-stand.")
+                auto_stand_next = True
             # Player turn loop: keep sending Hittt/Stand until server ends the round
             # Player turn
             while True:
-                choice = input("Hittt or Stand? ").strip()
-                if choice.lower() in ("q", "quit", "exit"):
-                    raise KeyboardInterrupt
-                if choice not in ("Hittt", "Stand"):
-                    print("Please type exactly: Hittt or Stand")
-                    continue
+                if auto_stand_next:
+                    choice = "Stand"
+                    auto_stand_next = False
+                else:
+                    choice = input("Hittt or Stand? ").strip()
+                    if choice.lower() in ("q", "quit", "exit"):
+                        raise KeyboardInterrupt
+                    if choice not in ("Hittt", "Stand"):
+                        print("Please type exactly: Hittt or Stand")
+                        continue
 
                 try:
                     sock.sendall(create_client_payload(choice))
@@ -320,7 +328,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                     print("Invalid server payload received.")
                     return
 
-                # ✅ Option 2: If bust happened on server, server sends LOSS immediately here.
+                # If bust happened on server, server sends LOSS immediately here.
                 if resp["result"] != RESULT_GAME_NOT_OVER:
                     if choice == "Hittt":
                         player_cards.append((resp["rank"], resp["suit"]))
@@ -332,7 +340,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                         print("Outcome: WIN")
                     elif resp["result"] == RESULT_LOSS:
                         losses += 1
-                        print("You busted! 😵")
+                        #print("You busted! 😵")
                         print("Outcome: LOSS")
                     else:
                         ties += 1
@@ -345,7 +353,10 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                     player_cards.append((resp["rank"], resp["suit"]))
                     print_hands(player_cards, dealer_cards, dealer_has_hidden=True)
                     print_totals(player_cards, dealer_cards, dealer_hidden=True)
-                    # ✅ IMPORTANT: No extra recv here in Option 2.
+
+                    if hand_total(player_cards) == 21:
+                        print("You hit 21! 🎉 Auto-stand.")
+                        auto_stand_next = True
                     continue
 
                 # choice == "Stand": first NOT_OVER payload after Stand is dealer hidden card reveal
@@ -376,7 +387,7 @@ def play_session(server_ip: str, server_port: int, rounds: int) -> None:
                         print("Outcome: WIN")
                     elif nxt["result"] == RESULT_LOSS:
                         losses += 1
-                        print("You busted! 😵")
+                        #print("You busted! 😵")
                         print("Outcome: LOSS")
                     else:
                         ties += 1
